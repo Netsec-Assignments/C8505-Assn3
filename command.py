@@ -30,6 +30,9 @@ class ShellCommand(Command):
             self.stdout = out
             self.stderr = err
 
+        def __str__(self):
+            return "exit code: {}\nstdout: {}\nstderr: {}".format(self.retcode, self.stdout, self.stderr)
+
         def to_bytes(self):
             buf = bytearray()
             buf.append(self.type)
@@ -43,7 +46,7 @@ class ShellCommand(Command):
             if self.stderr:
                 buf.extend(self.stderr)
 
-            return buf
+            return bytes(buf)
 
         @staticmethod
         def from_bytes(buf):
@@ -58,9 +61,12 @@ class ShellCommand(Command):
             return ShellCommand.Result(retcode, out, err)
 
     # command is the command to execute
-    def __init__(self, command):
+    def __init__(self, cmd):
         self.type = Command.SHELL
-        self.command = command
+        self.command = cmd
+
+    def __str__(self):
+        return "Command type: SHELL; command: {}".format(self.command)
 
     def to_bytes(self):
         # can't easily serialise strings, so we're doing it the old-fashioned way...
@@ -68,7 +74,7 @@ class ShellCommand(Command):
         buf.append(self.type)
         buf.append(len(self.command))
         buf.extend(self.command)
-        return buf
+        return bytes(buf)
 
     @staticmethod
     def from_bytes(buf):
@@ -99,6 +105,9 @@ class WatchCommand(Command):
             else:
                 self.err = err
 
+        def __str__(self):
+            return self.contents
+
         def to_bytes(self):
             buf = bytearray()
             buf.append(self.type)
@@ -111,7 +120,7 @@ class WatchCommand(Command):
             if self.err:
                 buf.extend(self.err)
 
-            return buf
+            return bytes(buf)
 
         @staticmethod
         def from_bytes(buf):
@@ -134,16 +143,19 @@ class WatchCommand(Command):
         self.type = Command.WATCH
         self.path = path
 
+    def __str__(self):
+        return "Command type: WATCH; path to watch: {}".format(self.path)
+
     def to_bytes(self):
         buf = bytearray()
         buf.append(self.type)
         buf.append(len(self.path))
         buf.extend(self.path)
-        return buf
+        return bytes(buf)
 
     @staticmethod
     def from_bytes(buf):
-        pathlen = buf[1]
+        pathlen = buf[1] if isinstance(pathlen, int) else ord(buf[1])
         path = str(buf[2:2+pathlen])
         return WatchCommand(path)
 
@@ -173,3 +185,21 @@ class WatchCommand(Command):
             i.remove_watch(self.path)
 
         return result
+
+class EndCommand(Command):
+
+    def __init__(self):
+        pass
+
+    def __str__(self):
+        return "Command type: END"
+
+    def to_bytes(self):
+        return bytes(b'\xff')
+
+    @staticmethod
+    def from_bytes(buf):
+        return EndCommand()
+
+    def run(self):
+        print("This is the end, beautiful friend")

