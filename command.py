@@ -178,8 +178,10 @@ class WatchCommand(Command):
                 contents = payload.read()
                 result = WatchCommand.Result(contents, None)
 
-        except Exception as err:
+        except Exception, err:
+            print("Error while watching file:")
             print(err)
+            print("This error will be transmitted to the client.")
             result = WatchCommand.Result(None, str(err))
         finally:
             i.remove_watch(self.path)

