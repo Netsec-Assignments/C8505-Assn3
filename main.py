@@ -1,6 +1,7 @@
 import argparse
 import backdoor
 import command
+import sys
 
 DEFAULT_PW="notmany1"
 DEFAULT_KEY="it's better than most passwords "

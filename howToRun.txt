@@ -1,0 +1,7 @@
+Install the following dependencies
+
+INotify:
+    pip3 install inotify
+
+PyCrypto:
+    pip3 install pycrypto
