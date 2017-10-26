@@ -178,7 +178,7 @@ class WatchCommand(Command):
                 contents = payload.read()
                 result = WatchCommand.Result(contents, None)
 
-        except Exception, err:
+        except Exception as err:
             print(err)
             result = WatchCommand.Result(None, str(err))
         finally:
